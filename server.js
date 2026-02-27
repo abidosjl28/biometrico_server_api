@@ -238,8 +238,30 @@ app.get('/api/health', (req, res) => {
 // Webhook para recibir mensajes entrantes de Evolution (WhatsApp)
 app.post('/api/whatsapp/incoming', async (req, res) => {
   try {
-    const { number, textMessage } = req.body;
-    const incomingText = (textMessage && textMessage.text) ? textMessage.text.trim() : '';
+    // Si viene de Evolution, viene envuelto en req.body.data
+    const eventData = req.body.data || req.body;
+
+    // Evitar que el bot se responda a sí mismo
+    if (eventData.key && eventData.key.fromMe) {
+      return res.json({ success: true, message: 'Ignorado (mensaje propio)' });
+    }
+
+    // Extraer número (suele venir como 51948902026@s.whatsapp.net)
+    let number = eventData.key?.remoteJid ? eventData.key.remoteJid.split('@')[0] : eventData.number;
+
+    // Extraer texto (puede venir en varios formatos dependiendo si es texto plano o extendido)
+    let incomingText = '';
+    if (eventData.message?.conversation) {
+      incomingText = eventData.message.conversation.trim();
+    } else if (eventData.message?.extendedTextMessage?.text) {
+      incomingText = eventData.message.extendedTextMessage.text.trim();
+    } else if (eventData.textMessage && eventData.textMessage.text) {
+      incomingText = eventData.textMessage.text.trim();
+    }
+
+    if (!number || !incomingText) {
+      return res.json({ success: true, message: 'Ignorado (sin texto o número reconocible)' });
+    }
 
     // Lógica para el Administrador
     if (number === '51948902026') {
