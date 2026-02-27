@@ -294,6 +294,17 @@ function sendWhatsAppMessage(phone, text) {
   });
 }
 
+// Endpoint para actualizar teléfono de usuario
+app.post('/api/users/update_phone', validateApiKey, async (req, res) => {
+  try {
+    const { user_id, phone } = req.body;
+    await runRun('UPDATE users SET phone = ? WHERE user_id = ?', [phone, user_id]);
+    res.json({ success: true, message: `Teléfono actualizado para ${user_id}` });
+  } catch (error) {
+    res.status(500).json({ success: false, error: error.message });
+  }
+});
+
 // Endpoint principal de sincronización
 app.post('/api/biometrico/sync', validateApiKey, async (req, res) => {
   const startTime = new Date();
@@ -322,8 +333,13 @@ app.post('/api/biometrico/sync', validateApiKey, async (req, res) => {
       for (const user of users) {
         try {
           await runRun(`
-                        INSERT OR REPLACE INTO users (user_id, uid, name, privilege, device_ip, updated_at)
+                        INSERT INTO users (user_id, uid, name, privilege, device_ip, updated_at)
                         VALUES (?, ?, ?, ?, ?, CURRENT_TIMESTAMP)
+                        ON CONFLICT(user_id) DO UPDATE SET 
+                            name=excluded.name, 
+                            privilege=excluded.privilege, 
+                            device_ip=excluded.device_ip, 
+                            updated_at=CURRENT_TIMESTAMP
                     `, [user.user_id, user.uid, user.name, user.privilege, device_info.ip]);
           usersInserted++;
         } catch (error) {
