@@ -246,7 +246,7 @@ function sendWhatsAppMessage(phone, text) {
 
       const payload = JSON.stringify({
         number: phone,
-        textMessage: { text: text }
+        text: text
       });
 
       const urlStr = `${process.env.EVOLUTION_API_URL}/message/sendText/${process.env.EVOLUTION_INSTANCE}`;
