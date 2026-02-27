@@ -443,6 +443,9 @@ app.post('/api/biometrico/sync', validateApiKey, async (req, res) => {
     let usersInserted = 0;
     let attendanceInserted = 0;
 
+    // Almacenar mensajes para enviarlos "en el fondo" después de responder
+    const pendingWhatsAppMessages = [];
+
     // Procesar usuarios
     if (users && users.length > 0) {
       for (const user of users) {
@@ -467,18 +470,25 @@ app.post('/api/biometrico/sync', validateApiKey, async (req, res) => {
     if (attendance && attendance.length > 0) {
       for (const record of attendance) {
         try {
-          const insertResult = await runRun(`
-                        INSERT OR IGNORE INTO attendance (user_id, timestamp, punch, status, device_ip)
-                        VALUES (?, ?, ?, ?, ?)
-                    `, [
-            record.user_id,
-            record.timestamp,
-            record.punch,
-            record.status,
-            record.device_ip
-          ]);
+          // 1. Verificar si el registro ya existe (por user_id y timestamp)
+          const existingRow = await runQuery(`
+            SELECT id FROM attendance 
+            WHERE user_id = ? AND timestamp = ? AND device_ip = ?
+          `, [record.user_id, record.timestamp, record.device_ip]);
 
-          if (insertResult.changes && insertResult.changes > 0) {
+          // 2. Si NO existe, lo insertamos y preparamos el mensaje
+          if (!existingRow || existingRow.length === 0) {
+            await runRun(`
+                INSERT INTO attendance (user_id, timestamp, punch, status, device_ip)
+                VALUES (?, ?, ?, ?, ?)
+            `, [
+              record.user_id,
+              record.timestamp,
+              record.punch,
+              record.status,
+              record.device_ip
+            ]);
+
             attendanceInserted++;
 
             // Buscar datos del usuario para el mensaje
@@ -487,22 +497,21 @@ app.post('/api/biometrico/sync', validateApiKey, async (req, res) => {
 
             // Determinar tipo de marcación
             const punchType = record.punch === 0 ? 'Entrada' : (record.punch === 1 ? 'Salida' : 'Marcación');
-            // Arreglar zona horaria asumiendo que el dispositivo ZKTeco está en Lima (-05:00)
+            // Arreglar zona horaria
             const safeTimeStr = record.timestamp.includes('T') ? record.timestamp : record.timestamp.replace(' ', 'T') + '-05:00';
             const fechaObj = new Date(safeTimeStr);
             const fechaHora = isNaN(fechaObj.getTime()) ? record.timestamp : fechaObj.toLocaleString('es-PE', { timeZone: 'America/Lima', hour12: true, year: 'numeric', month: '2-digit', day: '2-digit', hour: '2-digit', minute: '2-digit' }).replace(',', '');
 
             // Armar mensaje WhatsApp
             const mensaje = `👋 ¡Hola ${userName}! Tu registro de *${punchType}* ha sido procesado exitosamente a las ${fechaHora}.`;
-
-            // Enviar a process.env.WHATSAPP_TEST_NUMBER si no hay teléfono registrado (para pruebas de la Fase 1)
             const phoneToSend = (userRow && userRow.length > 0 && userRow[0].phone) ? userRow[0].phone : process.env.WHATSAPP_TEST_NUMBER;
 
             if (phoneToSend) {
-              // Enviar en background
-              sendWhatsAppMessage(phoneToSend, mensaje);
+              // Guardar para envío asíncrono
+              pendingWhatsAppMessages.push({ phone: phoneToSend, text: mensaje });
             }
           }
+
         } catch (error) {
           logger.warn(`Error procesando asistencia ${record.user_id}:`, error.message);
         }
@@ -528,6 +537,18 @@ app.post('/api/biometrico/sync', validateApiKey, async (req, res) => {
         sync_time: new Date().toISOString()
       }
     });
+
+    // Procesar envío de mensajes después de responder para evitar timeout en Python
+    if (pendingWhatsAppMessages.length > 0) {
+      setTimeout(async () => {
+        logger.info(`Enviando ${pendingWhatsAppMessages.length} notificaciones de WhatsApp asíncronas...`);
+        for (const msg of pendingWhatsAppMessages) {
+          await sendWhatsAppMessage(msg.phone, msg.text);
+          // Pausa de 500ms entre envíos para no saturar Evolution API
+          await new Promise(r => setTimeout(r, 500));
+        }
+      }, 100);
+    }
 
   } catch (error) {
     logger.error('❌ Error en sincronización:', error);
