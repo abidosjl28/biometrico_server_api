@@ -260,7 +260,7 @@ function sendWhatsAppMessage(phone, text) {
         headers: {
           'Content-Type': 'application/json',
           'apikey': process.env.EVOLUTION_API_KEY,
-          'Content-Length': payload.length
+          'Content-Length': Buffer.byteLength(payload)
         }
       };
 
