@@ -235,6 +235,96 @@ app.get('/api/health', (req, res) => {
   });
 });
 
+// Webhook para recibir mensajes entrantes de Evolution (WhatsApp)
+app.post('/api/whatsapp/incoming', async (req, res) => {
+  try {
+    const { number, textMessage } = req.body;
+    const incomingText = (textMessage && textMessage.text) ? textMessage.text.trim() : '';
+
+    // Lógica para el Administrador
+    if (number === '51948902026') {
+      // Verificar si envió un código de empleado (asumimos numérico)
+      const empCode = incomingText.trim();
+      if (!empCode || isNaN(empCode)) {
+        const adminHelp = `👋 Hola Administrador. Para ver las marcaciones de hoy de un empleado, envíame su código (ejemplo: "108").`;
+        await sendWhatsAppMessage(number, adminHelp);
+        return res.json({ success: true, message: 'Ayuda admin enviada' });
+      }
+
+      // Buscar al empleado por su ID
+      const targetUserRows = await runQuery('SELECT user_id, name FROM users WHERE user_id = ?', [empCode]);
+      if (!targetUserRows.length) {
+        await sendWhatsAppMessage(number, `❌ No encontré ningún empleado con el código: ${empCode}`);
+        return res.json({ success: true, message: 'Empleado no encontrado' });
+      }
+
+      const targetId = targetUserRows[0].user_id;
+      const targetName = targetUserRows[0].name || targetId;
+
+      // Obtener marcaciones del empleado
+      const targetTodayRows = await runQuery(`
+        SELECT timestamp, punch FROM attendance
+        WHERE user_id = ? AND DATE(timestamp) = DATE('now','localtime')
+        ORDER BY timestamp ASC
+      `, [targetId]);
+
+      if (!targetTodayRows.length) {
+        await sendWhatsAppMessage(number, `👤 ${targetName} no tiene marcaciones registradas hoy.`);
+        return res.json({ success: true, message: 'Sin marcaciones enviadas al admin' });
+      }
+
+      let adminSummary = `👤 Marcaciones de *${targetName}* hoy:\n`;
+      targetTodayRows.forEach(r => {
+        const type = r.punch === 0 ? 'Entrada' : (r.punch === 1 ? 'Salida' : 'Marcación');
+        const timeStr = new Date(r.timestamp).toLocaleString('es-PE', { timeZone: 'America/Lima', hour12: true });
+        adminSummary += `- ${type}: ${timeStr}\n`;
+      });
+
+      await sendWhatsAppMessage(number, adminSummary.trim());
+      return res.json({ success: true, message: 'Resumen admin enviado' });
+    }
+
+    // Lógica para Empleados normales
+    // Buscar usuario por teléfono
+    const userRows = await runQuery('SELECT user_id, name FROM users WHERE phone = ?', [number]);
+    if (!userRows.length) {
+      logger.warn(`WhatsApp inbound: número no registrado ${number}`);
+      return res.json({ success: false, error: 'Número no registrado' });
+    }
+    const userId = userRows[0].user_id;
+    const userName = userRows[0].name || userId;
+
+    if (incomingText === '4') {
+      // Obtener marcaciones del día para este usuario
+      const todayRows = await runQuery(`
+        SELECT timestamp, punch FROM attendance
+        WHERE user_id = ? AND DATE(timestamp) = DATE('now','localtime')
+        ORDER BY timestamp ASC
+      `, [userId]);
+      if (!todayRows.length) {
+        const msg = `👋 Hola ${userName}, no tienes marcaciones registradas hoy.`;
+        await sendWhatsAppMessage(number, msg);
+        return res.json({ success: true, message: 'Sin marcaciones enviadas' });
+      }
+      let summary = `👋 Hola ${userName}, tus marcaciones de hoy:\n`;
+      todayRows.forEach(r => {
+        const type = r.punch === 0 ? 'Entrada' : (r.punch === 1 ? 'Salida' : 'Marcación');
+        const timeStr = new Date(r.timestamp).toLocaleString('es-PE', { timeZone: 'America/Lima', hour12: true });
+        summary += `- ${type}: ${timeStr}\n`;
+      });
+      await sendWhatsAppMessage(number, summary.trim());
+      return res.json({ success: true, message: 'Resumen enviado' });
+    } else {
+      const msg = `👋 Hola ${userName}, para ver tus marcaciones de hoy escribe "4".`;
+      await sendWhatsAppMessage(number, msg);
+      return res.json({ success: true, message: 'Instrucción enviada' });
+    }
+  } catch (error) {
+    logger.error('Error webhook WhatsApp inbound', error);
+    res.status(500).json({ success: false, error: error.message });
+  }
+});
+
 // Helper para enviar mensaje de WhatsApp via Evolution API
 function sendWhatsAppMessage(phone, text) {
   return new Promise((resolve, reject) => {
@@ -305,7 +395,7 @@ app.post('/api/users/update_phone', validateApiKey, async (req, res) => {
   }
 });
 
-// Endpoint principal de sincronización
+// Endpoint para actualizar teléfono de usuario (ya creado anteriormente)\n\n// Endpoint principal de sincronización
 app.post('/api/biometrico/sync', validateApiKey, async (req, res) => {
   const startTime = new Date();
 
