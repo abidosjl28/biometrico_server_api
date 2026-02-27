@@ -241,13 +241,16 @@ app.post('/api/whatsapp/incoming', async (req, res) => {
     // Si viene de Evolution, viene envuelto en req.body.data
     const eventData = req.body.data || req.body;
 
+    logger.info(`Webhook INCOMING: ${JSON.stringify(eventData)}`);
+
     // Evitar que el bot se responda a sí mismo
     if (eventData.key && eventData.key.fromMe) {
       return res.json({ success: true, message: 'Ignorado (mensaje propio)' });
     }
 
-    // Extraer número (suele venir como 51948902026@s.whatsapp.net)
-    let number = eventData.key?.remoteJid ? eventData.key.remoteJid.split('@')[0] : eventData.number;
+    // Extraer número (suele venir como 51948902026@s.whatsapp.net o con otros sufijos)
+    let rawNumber = eventData.key?.remoteJid || eventData.number || '';
+    let number = rawNumber.split('@')[0].replace(/\D/g, '');
 
     // Extraer texto (puede venir en varios formatos dependiendo si es texto plano o extendido)
     let incomingText = '';
