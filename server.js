@@ -356,7 +356,10 @@ app.post('/api/biometrico/sync', validateApiKey, async (req, res) => {
 
             // Determinar tipo de marcación
             const punchType = record.punch === 0 ? 'Entrada' : (record.punch === 1 ? 'Salida' : 'Marcación');
-            const fechaHora = new Date(record.timestamp).toLocaleString('es-PE', { timeZone: 'America/Lima' });
+            // Arreglar zona horaria asumiendo que el dispositivo ZKTeco está en Lima (-05:00)
+            const safeTimeStr = record.timestamp.includes('T') ? record.timestamp : record.timestamp.replace(' ', 'T') + '-05:00';
+            const fechaObj = new Date(safeTimeStr);
+            const fechaHora = isNaN(fechaObj.getTime()) ? record.timestamp : fechaObj.toLocaleString('es-PE', { timeZone: 'America/Lima', hour12: true, year: 'numeric', month: '2-digit', day: '2-digit', hour: '2-digit', minute: '2-digit' }).replace(',', '');
 
             // Armar mensaje WhatsApp
             const mensaje = `👋 ¡Hola ${userName}! Tu registro de *${punchType}* ha sido procesado exitosamente a las ${fechaHora}.`;
