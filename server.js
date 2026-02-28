@@ -512,11 +512,17 @@ app.post('/api/biometrico/sync', validateApiKey, async (req, res) => {
 
             // Armar mensaje WhatsApp
             const mensaje = `👋 ¡Hola ${userName}! Tu registro de *${punchType}* ha sido procesado exitosamente a las ${fechaHora}.`;
-            const phoneToSend = (userRow && userRow.length > 0 && userRow[0].phone) ? userRow[0].phone : process.env.WHATSAPP_TEST_NUMBER;
+            const adminPhone = process.env.WHATSAPP_TEST_NUMBER;
+            const employeePhone = (userRow && userRow.length > 0) ? userRow[0].phone : null;
 
-            if (phoneToSend) {
-              // Guardar para envío asíncrono siempre
-              pendingWhatsAppMessages.push({ phone: phoneToSend, text: mensaje });
+            // 1. Enviar al administrador siempre (si está configurado)
+            if (adminPhone) {
+              pendingWhatsAppMessages.push({ phone: adminPhone, text: mensaje });
+            }
+
+            // 2. Enviar al empleado solo si tiene teléfono y no es el mismo que el administrador
+            if (employeePhone && employeePhone !== adminPhone) {
+              pendingWhatsAppMessages.push({ phone: employeePhone, text: mensaje });
             }
           }
 
