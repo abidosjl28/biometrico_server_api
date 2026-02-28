@@ -248,6 +248,10 @@ app.post('/api/whatsapp/incoming', async (req, res) => {
       return res.json({ success: true, message: 'Ignorado (mensaje propio)' });
     }
 
+    // Calcular fecha exacta de HOY en Perú (YYYY-MM-DD) para corregir el desfase del servidor UTC
+    const formatter = new Intl.DateTimeFormat('fr-CA', { timeZone: 'America/Lima', year: 'numeric', month: '2-digit', day: '2-digit' });
+    const todayDateStr = formatter.format(new Date());
+
     // Extraer número (suele venir como 51948902026@s.whatsapp.net o con otros sufijos)
     let rawNumber = eventData.key?.remoteJid || eventData.number || '';
     let number = rawNumber.split('@')[0].replace(/\D/g, '');
@@ -289,9 +293,9 @@ app.post('/api/whatsapp/incoming', async (req, res) => {
       // Obtener marcaciones del empleado
       const targetTodayRows = await runQuery(`
         SELECT timestamp, punch FROM attendance
-        WHERE user_id = ? AND DATE(timestamp) = DATE('now','localtime')
+        WHERE user_id = ? AND substr(timestamp, 1, 10) = ?
         ORDER BY timestamp ASC
-      `, [targetId]);
+      `, [targetId, todayDateStr]);
 
       if (!targetTodayRows.length) {
         await sendWhatsAppMessage(number, `👤 ${targetName} no tiene marcaciones registradas hoy.`);
@@ -323,9 +327,9 @@ app.post('/api/whatsapp/incoming', async (req, res) => {
       // Obtener marcaciones del día para este usuario
       const todayRows = await runQuery(`
         SELECT timestamp, punch FROM attendance
-        WHERE user_id = ? AND DATE(timestamp) = DATE('now','localtime')
+        WHERE user_id = ? AND substr(timestamp, 1, 10) = ?
         ORDER BY timestamp ASC
-      `, [userId]);
+      `, [userId, todayDateStr]);
       if (!todayRows.length) {
         const msg = `👋 Hola ${userName}, no tienes marcaciones registradas hoy.`;
         await sendWhatsAppMessage(number, msg);
