@@ -252,8 +252,10 @@ app.post('/api/whatsapp/incoming', async (req, res) => {
     }
 
     // Calcular fecha exacta de HOY en Perú (YYYY-MM-DD) para corregir el desfase del servidor UTC
-    const formatter = new Intl.DateTimeFormat('fr-CA', { timeZone: 'America/Lima', year: 'numeric', month: '2-digit', day: '2-digit' });
-    const todayDateStr = formatter.format(new Date());
+    // Método a prueba de fallos sin depender de los locales de Node Intl
+    const peruTime = new Date().toLocaleString("en-US", { timeZone: "America/Lima" });
+    const d = new Date(peruTime);
+    const todayDateStr = d.getFullYear() + '-' + String(d.getMonth() + 1).padStart(2, '0') + '-' + String(d.getDate()).padStart(2, '0');
 
     // Extraer número (suele venir como 51948902026@s.whatsapp.net o con otros sufijos)
     let rawNumber = eventData.key?.remoteJid || eventData.number || '';
