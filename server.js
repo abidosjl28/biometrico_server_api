@@ -309,7 +309,14 @@ app.post('/api/whatsapp/incoming', async (req, res) => {
       let adminSummary = `👤 Marcaciones de *${targetName}* hoy:\n`;
       targetTodayRows.forEach(r => {
         const type = r.punch === 0 ? 'Entrada' : (r.punch === 1 ? 'Salida' : 'Marcación');
-        const timeStr = new Date(r.timestamp).toLocaleString('es-PE', { timeZone: 'America/Lima', hour12: true });
+        // El timestamp ya viene en hora de Lima desde la BD (ej. '2026-02-28 08:23:49')
+        // Al armar el string, lo forzamos a interpretarse y mostrarse tal cual, sin shift de zona
+        const safeTimeStr = r.timestamp.replace(' ', 'T');
+        const d = new Date(safeTimeStr);
+        let timeStr = r.timestamp.split(' ')[1] || r.timestamp; // Fallback al texto crudo
+        if(!isNaN(d.getTime())) {
+             timeStr = d.toLocaleTimeString('es-PE', { hour12: true, hour: '2-digit', minute: '2-digit' });
+        }
         adminSummary += `- ${type}: ${timeStr}\n`;
       });
 
@@ -342,7 +349,12 @@ app.post('/api/whatsapp/incoming', async (req, res) => {
       let summary = `👋 Hola ${userName}, tus marcaciones de hoy:\n`;
       todayRows.forEach(r => {
         const type = r.punch === 0 ? 'Entrada' : (r.punch === 1 ? 'Salida' : 'Marcación');
-        const timeStr = new Date(r.timestamp).toLocaleString('es-PE', { timeZone: 'America/Lima', hour12: true });
+        const safeTimeStr = r.timestamp.replace(' ', 'T');
+        const d = new Date(safeTimeStr);
+        let timeStr = r.timestamp.split(' ')[1] || r.timestamp;
+        if(!isNaN(d.getTime())) {
+             timeStr = d.toLocaleTimeString('es-PE', { hour12: true, hour: '2-digit', minute: '2-digit' });
+        }
         summary += `- ${type}: ${timeStr}\n`;
       });
       await sendWhatsAppMessage(number, summary.trim());
