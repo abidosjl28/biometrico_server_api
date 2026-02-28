@@ -233,7 +233,7 @@ app.get('/api/health', (req, res) => {
     success: true,
     message: 'API funcionando correctamente',
     timestamp: new Date().toISOString(),
-    version: '1.0.0',
+    version: '1.0.1',
     database: DB_TYPE
   });
 });
