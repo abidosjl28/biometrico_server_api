@@ -515,18 +515,8 @@ app.post('/api/biometrico/sync', validateApiKey, async (req, res) => {
             const phoneToSend = (userRow && userRow.length > 0 && userRow[0].phone) ? userRow[0].phone : process.env.WHATSAPP_TEST_NUMBER;
 
             if (phoneToSend) {
-              // Obtener fecha actual en zona horaria Lima (YYYY-MM-DD)
-              const limaTimeMs = Date.now() - (5 * 60 * 60 * 1000);
-              const todayDateStr = new Date(limaTimeMs).toISOString().split('T')[0];
-              
-              // Extraer fecha del registro (YYYY-MM-DD)
-              const recordDateStr = safeTimeStr.split('T')[0];
-
-              // Solo enviar si la marcación es del día de HOY
-              if (recordDateStr === todayDateStr) {
-                  // Guardar para envío asíncrono
-                  pendingWhatsAppMessages.push({ phone: phoneToSend, text: mensaje });
-              }
+              // Guardar para envío asíncrono siempre
+              pendingWhatsAppMessages.push({ phone: phoneToSend, text: mensaje });
             }
           }
 
