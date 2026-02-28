@@ -865,6 +865,25 @@ app.get('/api/sync-logs', validateApiKey, async (req, res) => {
   }
 });
 
+app.get('/api/logs', (req, res) => {
+  const apiKey = req.headers['x-api-key'] || req.query.api_key;
+  if (apiKey !== process.env.API_KEY) {
+    return res.status(401).json({ success: false, error: 'No autorizado' });
+  }
+  
+  try {
+    const logPath = path.join(__dirname, 'logs', 'combined.log');
+    if (fs.existsSync(logPath)) {
+      const logs = fs.readFileSync(logPath, 'utf8').split('\n').slice(-150).join('\n');
+      res.type('text/plain').send(logs);
+    } else {
+      res.status(404).send('No logs found');
+    }
+  } catch (err) {
+    res.status(500).send('Error reading logs');
+  }
+});
+
 // Manejo de errores
 app.use((err, req, res, next) => {
   logger.error('Error no manejado:', err);
@@ -931,25 +950,6 @@ process.on('SIGINT', () => {
     });
   } else {
     process.exit(0);
-  }
-});
-
-app.get('/api/logs', (req, res) => {
-  const apiKey = req.headers['x-api-key'] || req.query.api_key;
-  if (apiKey !== process.env.API_KEY) {
-    return res.status(401).json({ success: false, error: 'No autorizado' });
-  }
-  
-  try {
-    const logPath = path.join(__dirname, 'logs', 'combined.log');
-    if (fs.existsSync(logPath)) {
-      const logs = fs.readFileSync(logPath, 'utf8').split('\n').slice(-150).join('\n');
-      res.type('text/plain').send(logs);
-    } else {
-      res.status(404).send('No logs found');
-    }
-  } catch (err) {
-    res.status(500).send('Error reading logs');
   }
 });
 
