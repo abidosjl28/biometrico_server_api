@@ -510,19 +510,25 @@ app.post('/api/biometrico/sync', validateApiKey, async (req, res) => {
             const fechaObj = new Date(safeTimeStr);
             const fechaHora = isNaN(fechaObj.getTime()) ? record.timestamp : fechaObj.toLocaleString('es-PE', { timeZone: 'America/Lima', hour12: true, year: 'numeric', month: '2-digit', day: '2-digit', hour: '2-digit', minute: '2-digit' }).replace(',', '');
 
-            // Armar mensaje WhatsApp
-            const mensaje = `👋 ¡Hola ${userName}! Tu registro de *${punchType}* ha sido procesado exitosamente a las ${fechaHora}.`;
-            const adminPhone = process.env.WHATSAPP_TEST_NUMBER;
-            const employeePhone = (userRow && userRow.length > 0) ? userRow[0].phone : null;
+            // 5. Solo enviar notificaciones de WhatsApp si el registro es de HOY
+            const recordDateStr = record.timestamp.split(' ')[0];
+            const todayDateStr = startTime.toISOString().split('T')[0];
 
-            // 1. Enviar al administrador siempre (si está configurado)
-            if (adminPhone) {
-              pendingWhatsAppMessages.push({ phone: adminPhone, text: mensaje });
-            }
+            if (recordDateStr === todayDateStr) {
+              // Armar mensaje WhatsApp
+              const mensaje = `👋 ¡Hola ${userName}! Tu registro de *${punchType}* ha sido procesado exitosamente a las ${fechaHora}.`;
+              const adminPhone = process.env.WHATSAPP_TEST_NUMBER;
+              const employeePhone = (userRow && userRow.length > 0) ? userRow[0].phone : null;
 
-            // 2. Enviar al empleado solo si tiene teléfono y no es el mismo que el administrador
-            if (employeePhone && employeePhone !== adminPhone) {
-              pendingWhatsAppMessages.push({ phone: employeePhone, text: mensaje });
+              // 1. Enviar al administrador siempre (si está configurado)
+              if (adminPhone) {
+                pendingWhatsAppMessages.push({ phone: adminPhone, text: mensaje });
+              }
+
+              // 2. Enviar al empleado solo si tiene teléfono y no es el mismo que el administrador
+              if (employeePhone && employeePhone !== adminPhone) {
+                pendingWhatsAppMessages.push({ phone: employeePhone, text: mensaje });
+              }
             }
           }
 
