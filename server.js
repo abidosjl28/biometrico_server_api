@@ -12,6 +12,9 @@ const https = require('https');
 require('dotenv').config();
 
 const app = express();
+// Configurar "trust proxy" porque el servidor está detrás de Coolify/Nginx/Cloudflare
+app.set('trust proxy', 1);
+
 const PORT = process.env.PORT || 3000;
 
 // Configuración de logging
