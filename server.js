@@ -10,6 +10,12 @@ const path = require('path');
 const http = require('http');
 const https = require('https');
 require('dotenv').config();
+const { createClient } = require('@supabase/supabase-js');
+
+// Supabase Initialization
+const supabaseUrl = process.env.SUPABASE_URL;
+const supabaseKey = process.env.SUPABASE_SERVICE_ROLE || process.env.SUPABASE_KEY;
+const supabase = (supabaseUrl && supabaseKey) ? createClient(supabaseUrl, supabaseKey) : null;
 
 const app = express();
 // Configurar "trust proxy" porque el servidor está detrás de Coolify/Nginx/Cloudflare
@@ -450,6 +456,51 @@ app.post('/api/whatsapp/incoming', async (req, res) => {
       }
     };
 
+    const getProductInfo = async (searchText) => {
+      if (!supabase) return "❌ Error: Supabase no está configurado en el servidor.";
+      
+      try {
+        // 1. Obtener última sincronización
+        const { data: syncData } = await supabase
+          .from('sync_history')
+          .select('fecha_sync')
+          .eq('tabla', 'tmarti')
+          .order('fecha_sync', { ascending: false })
+          .limit(1);
+        
+        let syncLabel = "No disponible";
+        if (syncData && syncData.length > 0) {
+          const d = new Date(syncData[0].fecha_sync);
+          syncLabel = d.toLocaleString('es-PE', { hour12: true });
+        }
+
+        // 2. Buscar producto por código o descripción
+        const { data: products, error } = await supabase
+          .from('tmarti')
+          .select('cartcodigo, cartdescri, cunicodigo, npvp1, npvp2')
+          .or(`cartcodigo.ilike.%${searchText}%,cartdescri.ilike.%${searchText}%`)
+          .eq('deleted', false)
+          .limit(5);
+
+        if (error) throw error;
+        if (!products || products.length === 0) return `🔍 No encontré ningún producto que coincida con "${searchText}".`;
+
+        let msg = `📦 *Resultados de Búsqueda*:\n_(Sincronizado: ${syncLabel})_\n\n`;
+        products.forEach(p => {
+          msg += `🔹 *${p.cartdescri}*\n`;
+          msg += `   - Código: ${p.cartcodigo}\n`;
+          msg += `   - Unidad: ${p.cunicodigo}\n`;
+          msg += `   - Precio Mayor: S/ ${p.npvp1?.toFixed(2)}\n`;
+          msg += `   - Precio Público: S/ ${p.npvp2?.toFixed(2)}\n\n`;
+        });
+        
+        return msg.trim();
+      } catch (err) {
+        logger.error('Error consultando Supabase:', err);
+        return "❌ Error al conectar con la base de datos de productos.";
+      }
+    };
+
     // --- Lógica Principal de Comandos ---
     const isAdmin = number === '51948902026';
     const parts = textUpper.split(/\s+/);
@@ -508,12 +559,16 @@ app.post('/api/whatsapp/incoming', async (req, res) => {
     } else if (textUpper.startsWith('T')) {
       const msg = await getMonthlyReport(targetId, targetName, 'T', queryMonth, queryYear);
       await sendWhatsAppMessage(number, msg);
+    } else if (textUpper.startsWith('P ')) {
+      const searchText = incomingText.substring(2).trim();
+      const msg = await getProductInfo(searchText);
+      await sendWhatsAppMessage(number, msg);
     } else if (textUpper.startsWith('4') || textUpper.includes('AYER') || incomingText.match(/\d/)) {
       const msg = await getDailyReport(targetId, targetName, queryDate, labelDate);
       await sendWhatsAppMessage(number, msg);
     } else {
       // Catálogo / Ayuda
-      const menu = `👋 Hola *${targetName}*.\nAquí tienes el catálogo de consultas:\n\n*1. Marcaciones Diarias*\n- Envía *4* o *ayer* o una fecha (ej: *28/02*).\n\n*2. Reportes Mensuales*\n- *F [MES]*: Faltas (ej: *F 02*).\n- *I [MES]*: Incompletos (ej: *I 02*).\n- *T [MES]*: Tardanzas y Horas (ej: *T 02*).\n\n_(Nota: Los meses son 01, 02, etc)_`;
+      const menu = `👋 Hola *${targetName}*.\nAquí tienes el catálogo de consultas:\n\n*1. Marcaciones Diarias*\n- Envía *4* o *ayer* o una fecha (ej: *28/02*).\n\n*2. Reportes Mensuales*\n- *F [MES]*: Faltas.\n- *I [MES]*: Incompletos.\n- *T [MES]*: Tardanzas y Horas.\n\n*3. Catálogo de Precios (NUEVO)*\n- *P [PRODUCTO]*: Busca precios y código (ej: *P coca*).\n\n_(Nota: Los meses son 01, 02, etc)_`;
       await sendWhatsAppMessage(number, menu);
     }
 
