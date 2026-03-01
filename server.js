@@ -234,6 +234,17 @@ async function initializeDatabase() {
       )
     `);
 
+    // Tabla de logs de uso del bot
+    await runRun(`
+      CREATE TABLE IF NOT EXISTS bot_usage_logs (
+        id INTEGER PRIMARY KEY AUTOINCREMENT,
+        phone TEXT NOT NULL,
+        name TEXT,
+        command TEXT,
+        timestamp DATETIME DEFAULT CURRENT_TIMESTAMP
+      )
+    `);
+
     // Índices para mejor rendimiento
     await runRun('CREATE INDEX IF NOT EXISTS idx_attendance_user_timestamp ON attendance(user_id, timestamp)');
     await runRun('CREATE INDEX IF NOT EXISTS idx_attendance_device_timestamp ON attendance(device_ip, timestamp)');
@@ -529,6 +540,72 @@ app.post('/api/whatsapp/incoming', async (req, res) => {
       }
     };
 
+    const logUsage = async (phone, name, command) => {
+      try {
+        await runRun('INSERT INTO bot_usage_logs (phone, name, command) VALUES (?, ?, ?)', [phone, name, command]);
+      } catch (err) {
+        logger.warn('Error guardando log de uso:', err.message);
+      }
+    };
+
+    const getUsageReport = async (monthStr = null) => {
+      try {
+        let query, params;
+        const limaTimeMs = Date.now() - (5 * 60 * 60 * 1000);
+        const today = new Date(limaTimeMs).toISOString().split('T')[0];
+
+        if (monthStr) {
+          // Reporte mensual
+          const year = new Date().getFullYear();
+          const targetMonth = `${year}-${monthStr.padStart(2, '0')}`;
+          query = `
+            SELECT phone, name, COUNT(*) as total, MAX(timestamp) as last_seen
+            FROM bot_usage_logs
+            WHERE substr(timestamp, 1, 7) = ?
+            GROUP BY phone
+            ORDER BY total DESC
+          `;
+          params = [targetMonth];
+          const monthName = new Date(year, parseInt(monthStr)-1).toLocaleString('es-ES', { month: 'long' });
+          let msg = `📊 *Reporte de Uso del Bot* (${monthName})\n\n`;
+          const rows = await runQuery(query, params);
+          if (!rows.length) return `📭 No hay registros de uso para ${monthName}.`;
+          
+          let grandTotal = 0;
+          rows.forEach(r => {
+            msg += `• *${r.name || r.phone}*: ${r.total} consultas\n`;
+            grandTotal += r.total;
+          });
+          msg += `\n*TOTAL MENSUAL: ${grandTotal}*`;
+          return msg;
+        } else {
+          // Reporte diario (hoy)
+          query = `
+            SELECT phone, name, COUNT(*) as total
+            FROM bot_usage_logs
+            WHERE substr(timestamp, 1, 10) = ?
+            GROUP BY phone
+            ORDER BY total DESC
+          `;
+          params = [today];
+          let msg = `📊 *Resumen de Uso - Hoy* (${today})\n\n`;
+          const rows = await runQuery(query, params);
+          if (!rows.length) return `📭 No hay actividad registrada el día de hoy.`;
+          
+          let grandTotal = 0;
+          rows.forEach(r => {
+            msg += `• *${r.name || r.phone}*: ${r.total} consultas\n`;
+            grandTotal += r.total;
+          });
+          msg += `\n*TOTAL HOY: ${grandTotal}*`;
+          return msg;
+        }
+      } catch (err) {
+        logger.error('Error generando reporte de uso:', err);
+        return "❌ Error al generar el reporte de uso.";
+      }
+    };
+
     // --- Lógica Principal de Comandos ---
     const adminNumber = '51948902026';
     const isAdmin = number === adminNumber;
@@ -539,6 +616,15 @@ app.post('/api/whatsapp/incoming', async (req, res) => {
 
     const parts = textUpper.split(/\s+/);
     let targetId, targetName;
+
+    // Reporte de uso (Exclusivo Admin)
+    if (parts[0] === 'R' && isAdmin) {
+      await logUsage(number, 'ADMIN', 'Reporte Uso');
+      const queryMonth = parts[1];
+      const msg = await getUsageReport(queryMonth);
+      await sendWhatsAppMessage(number, msg);
+      return res.json({ success: true });
+    }
 
     if (isAdmin && parts[0].match(/^\d+$/)) {
       // Admin consultando por ID de empleado
@@ -593,15 +679,19 @@ app.post('/api/whatsapp/incoming', async (req, res) => {
     }
 
     if (textUpper.startsWith('F')) {
+      await logUsage(number, targetName, 'Faltas');
       const msg = await getMonthlyReport(targetId, targetName, 'F', queryMonth, queryYear);
       await sendWhatsAppMessage(number, msg);
     } else if (textUpper.startsWith('I')) {
+      await logUsage(number, targetName, 'Incompletos');
       const msg = await getMonthlyReport(targetId, targetName, 'I', queryMonth, queryYear);
       await sendWhatsAppMessage(number, msg);
     } else if (textUpper.startsWith('T')) {
+      await logUsage(number, targetName, 'Tardanzas');
       const msg = await getMonthlyReport(targetId, targetName, 'T', queryMonth, queryYear);
       await sendWhatsAppMessage(number, msg);
     } else if (textUpper.startsWith('P ')) {
+      await logUsage(number, targetName, 'Precios');
       if (!isPriceAuthorized) {
         await sendWhatsAppMessage(number, "🚫 No tienes autorización para consultar la lista de precios.");
         return res.json({ success: true, message: 'Precio denegado (no autorizado)' });
@@ -610,14 +700,20 @@ app.post('/api/whatsapp/incoming', async (req, res) => {
       const msg = await getProductInfo(searchText);
       await sendWhatsAppMessage(number, msg);
     } else if (textUpper.startsWith('4') || textUpper.includes('AYER') || incomingText.match(/\d/)) {
+      await logUsage(number, targetName, 'Diario');
       const msg = await getDailyReport(targetId, targetName, queryDate, labelDate);
       await sendWhatsAppMessage(number, msg);
     } else {
       // Catálogo / Ayuda
+      await logUsage(number, targetName, 'Menu/Ayuda');
       let menu = `👋 Hola *${targetName}*.\nAquí tienes el catálogo de consultas:\n\n*1. Marcaciones Diarias*\n- Envía *4* o *ayer* o una fecha (ej: *28/02*).\n\n*2. Reportes Mensuales*\n- *F [MES]*: Faltas.\n- *I [MES]*: Incompletos.\n- *T [MES]*: Tardanzas y Horas.\n`;
       
       if (isPriceAuthorized) {
         menu += `\n*3. Catálogo de Precios (NUEVO)*\n- *P [PRODUCTO]*: Busca precios y stock (ej: *P coca*).\n`;
+      }
+
+      if (isAdmin) {
+        menu += `\n*4. Reporte de Uso (Admin)*\n- *R*: Resumen de hoy.\n- *R [MES]*: Resumen del mes.\n`;
       }
       
       menu += `\n_(Nota: Los meses son 01, 02, etc)_`;
