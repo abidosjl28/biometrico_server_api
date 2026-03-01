@@ -470,8 +470,17 @@ app.post('/api/whatsapp/incoming', async (req, res) => {
         
         let syncLabel = "No disponible";
         if (syncData && syncData.length > 0) {
-          const d = new Date(syncData[0].fecha_sync);
-          syncLabel = d.toLocaleString('es-PE', { hour12: true });
+          // Si Supabase devuelve '2026-03-01 14:55:01', forzamos a UTC y restamos 5 horas para Lima
+          const utcMs = new Date(syncData[0].fecha_sync.replace(' ', 'T') + 'Z').getTime();
+          const limaDate = new Date(utcMs - (5 * 60 * 60 * 1000));
+          syncLabel = limaDate.toLocaleString('es-PE', { 
+            hour12: true,
+            day: '2-digit', 
+            month: '2-digit', 
+            year: 'numeric',
+            hour: '2-digit', 
+            minute: '2-digit'
+          });
         }
 
         // 2. Buscar producto por código o descripción
