@@ -521,7 +521,13 @@ app.post('/api/whatsapp/incoming', async (req, res) => {
     };
 
     // --- Lógica Principal de Comandos ---
-    const isAdmin = number === '51948902026';
+    const adminNumber = '51948902026';
+    const isAdmin = number === adminNumber;
+    
+    // Whitelist para lista de precios (P)
+    const priceWhitelist = (process.env.PRICE_LIST_WHITELIST || '').split(',').map(n => n.trim());
+    const isPriceAuthorized = isAdmin || priceWhitelist.includes(number) || priceWhitelist.includes('51' + number);
+
     const parts = textUpper.split(/\s+/);
     let targetId, targetName;
 
@@ -579,6 +585,10 @@ app.post('/api/whatsapp/incoming', async (req, res) => {
       const msg = await getMonthlyReport(targetId, targetName, 'T', queryMonth, queryYear);
       await sendWhatsAppMessage(number, msg);
     } else if (textUpper.startsWith('P ')) {
+      if (!isPriceAuthorized) {
+        await sendWhatsAppMessage(number, "🚫 No tienes autorización para consultar la lista de precios.");
+        return res.json({ success: true, message: 'Precio denegado (no autorizado)' });
+      }
       const searchText = incomingText.substring(2).trim();
       const msg = await getProductInfo(searchText);
       await sendWhatsAppMessage(number, msg);
@@ -587,7 +597,13 @@ app.post('/api/whatsapp/incoming', async (req, res) => {
       await sendWhatsAppMessage(number, msg);
     } else {
       // Catálogo / Ayuda
-      const menu = `👋 Hola *${targetName}*.\nAquí tienes el catálogo de consultas:\n\n*1. Marcaciones Diarias*\n- Envía *4* o *ayer* o una fecha (ej: *28/02*).\n\n*2. Reportes Mensuales*\n- *F [MES]*: Faltas.\n- *I [MES]*: Incompletos.\n- *T [MES]*: Tardanzas y Horas.\n\n*3. Catálogo de Precios (NUEVO)*\n- *P [PRODUCTO]*: Busca precios y código (ej: *P coca*).\n\n_(Nota: Los meses son 01, 02, etc)_`;
+      let menu = `👋 Hola *${targetName}*.\nAquí tienes el catálogo de consultas:\n\n*1. Marcaciones Diarias*\n- Envía *4* o *ayer* o una fecha (ej: *28/02*).\n\n*2. Reportes Mensuales*\n- *F [MES]*: Faltas.\n- *I [MES]*: Incompletos.\n- *T [MES]*: Tardanzas y Horas.\n`;
+      
+      if (isPriceAuthorized) {
+        menu += `\n*3. Catálogo de Precios (NUEVO)*\n- *P [PRODUCTO]*: Busca precios y stock (ej: *P coca*).\n`;
+      }
+      
+      menu += `\n_(Nota: Los meses son 01, 02, etc)_`;
       await sendWhatsAppMessage(number, menu);
     }
 
