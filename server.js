@@ -53,6 +53,9 @@ if (DB_TYPE === 'sqlite') {
       console.error('❌ Error abriendo base de datos SQLite:', err.message);
     } else {
       console.log(`✅ Conectado a SQLite: ${dbPath}`);
+      // Habilitar modo WAL para mejor rendimiento en escrituras concurrentes
+      db.run('PRAGMA journal_mode = WAL');
+      db.run('PRAGMA synchronous = NORMAL');
       initializeDatabase();
     }
   });
@@ -466,6 +469,9 @@ app.post('/api/biometrico/sync', validateApiKey, async (req, res) => {
     // Almacenar mensajes para enviarlos "en el fondo" después de responder
     const pendingWhatsAppMessages = [];
 
+    // Iniciar transacción para procesamiento masivo
+    await runRun('BEGIN TRANSACTION');
+
     // Procesar usuarios
     if (users && users.length > 0) {
       for (const user of users) {
@@ -490,28 +496,23 @@ app.post('/api/biometrico/sync', validateApiKey, async (req, res) => {
     if (attendance && attendance.length > 0) {
       for (const record of attendance) {
         try {
-          // 1. Verificar si el registro ya existe (por user_id y timestamp)
-          const existingRow = await runQuery(`
-            SELECT id FROM attendance 
-            WHERE user_id = ? AND timestamp = ? AND device_ip = ?
-          `, [record.user_id, record.timestamp, record.device_ip]);
-
-          // 2. Si NO existe, lo insertamos y preparamos el mensaje
-          if (!existingRow || existingRow.length === 0) {
-            await runRun(`
-                INSERT INTO attendance (user_id, timestamp, punch, status, device_ip)
+          // Usar INSERT OR IGNORE para evitar el SELECT previo y aprovechar el indice UNIQUE
+          const result = await runRun(`
+                INSERT OR IGNORE INTO attendance (user_id, timestamp, punch, status, device_ip)
                 VALUES (?, ?, ?, ?, ?)
             `, [
-              record.user_id,
-              record.timestamp,
-              record.punch,
-              record.status,
-              record.device_ip
-            ]);
+            record.user_id,
+            record.timestamp,
+            record.punch,
+            record.status,
+            record.device_ip
+          ]);
 
+          // Si hubo cambios (filas insertadas > 0), procesar notificación
+          if (result.changes > 0) {
             attendanceInserted++;
 
-            // Buscar datos del usuario para el mensaje
+            // Buscar datos del usuario para el mensaje (esto es rápido por índice)
             const userRow = await runQuery(`SELECT name, phone FROM users WHERE user_id = ?`, [record.user_id]);
             const userName = (userRow && userRow.length > 0 && userRow[0].name) ? userRow[0].name : record.user_id;
 
@@ -522,28 +523,24 @@ app.post('/api/biometrico/sync', validateApiKey, async (req, res) => {
             const fechaObj = new Date(safeTimeStr);
             const fechaHora = isNaN(fechaObj.getTime()) ? record.timestamp : fechaObj.toLocaleString('es-PE', { timeZone: 'America/Lima', hour12: true, year: 'numeric', month: '2-digit', day: '2-digit', hour: '2-digit', minute: '2-digit' }).replace(',', '');
 
-            // 5. Solo enviar notificaciones de WhatsApp si el registro es de HOY
+            // Solo enviar notificaciones de WhatsApp si el registro es de HOY (Lima)
             const recordDateStr = record.timestamp.split(' ')[0];
-            const todayDateStr = startTime.toISOString().split('T')[0];
+            const limaTimeMs = Date.now() - (5 * 60 * 60 * 1000);
+            const todayDateStr = new Date(limaTimeMs).toISOString().split('T')[0];
 
             if (recordDateStr === todayDateStr) {
-              // Armar mensaje WhatsApp
               const mensaje = `👋 ¡Hola ${userName}! Tu registro de *${punchType}* ha sido procesado exitosamente a las ${fechaHora}.`;
               const adminPhone = process.env.WHATSAPP_TEST_NUMBER;
               const employeePhone = (userRow && userRow.length > 0) ? userRow[0].phone : null;
 
-              // 1. Enviar al administrador siempre (si está configurado)
               if (adminPhone) {
                 pendingWhatsAppMessages.push({ phone: adminPhone, text: mensaje });
               }
-
-              // 2. Enviar al empleado solo si tiene teléfono y no es el mismo que el administrador
               if (employeePhone && employeePhone !== adminPhone) {
                 pendingWhatsAppMessages.push({ phone: employeePhone, text: mensaje });
               }
             }
           }
-
         } catch (error) {
           logger.warn(`Error procesando asistencia ${record.user_id}:`, error.message);
         }
@@ -555,6 +552,9 @@ app.post('/api/biometrico/sync', validateApiKey, async (req, res) => {
             INSERT INTO sync_logs (device_ip, sync_type, records_count, status, start_time, end_time)
             VALUES (?, 'bulk_sync', ?, 'success', ?, ?)
         `, [device_info.ip, usersInserted + attendanceInserted, startTime.toISOString(), new Date().toISOString()]);
+
+    // Consolidar cambios
+    await runRun('COMMIT');
 
     logger.info(`✅ Sincronización exitosa - IP: ${device_info.ip}, Usuarios: ${usersInserted}, Asistencia: ${attendanceInserted}`);
 
@@ -584,6 +584,14 @@ app.post('/api/biometrico/sync', validateApiKey, async (req, res) => {
 
   } catch (error) {
     logger.error('❌ Error en sincronización:', error);
+
+    // Revertir cambios si la transacción falló
+    try {
+      await runRun('ROLLBACK');
+      logger.info('🔄 Transacción revertida (ROLLBACK) debido a un error.');
+    } catch (rollbackError) {
+      // Ignorar si no había transacción activa
+    }
 
     // Registrar error en logs (intentar)
     try {
