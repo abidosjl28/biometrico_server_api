@@ -252,8 +252,8 @@ app.get('/api/health', (req, res) => {
     success: true,
     message: 'API funcionando correctamente',
     timestamp: new Date().toISOString(),
-    version: '1.0.1',
-    database: DB_TYPE
+    version: '1.0.2',
+    database: process.env.DB_TYPE || 'sqlite'
   });
 });
 
@@ -297,17 +297,19 @@ app.post('/api/whatsapp/incoming', async (req, res) => {
     if (number === '51948902026') {
       // Verificar si envió un código de empleado (asumimos numérico)
       const empCode = incomingText.trim();
+      logger.info(`Admin solicitando reporte para empleado: [${empCode}]`);
       if (!empCode || isNaN(empCode)) {
-        const adminHelp = `👋 Hola Administrador. Para ver las marcaciones de hoy de un empleado, envíame su código (ejemplo: "108").`;
-        await sendWhatsAppMessage(number, adminHelp);
-        return res.json({ success: true, message: 'Ayuda admin enviada' });
+        await sendWhatsAppMessage(number, '⚠️ Por favor envía solo el número de código del empleado (ej: 108).');
+        return res.json({ success: true });
       }
 
       // Buscar al empleado por su ID
+      logger.info(`Buscando usuario ${empCode} en DB...`);
       const targetUserRows = await runQuery('SELECT user_id, name FROM users WHERE user_id = ?', [empCode]);
+      logger.info(`Resultado búsqueda usuario: ${JSON.stringify(targetUserRows)}`);
       if (!targetUserRows.length) {
-        await sendWhatsAppMessage(number, `❌ No encontré ningún empleado con el código: ${empCode}`);
-        return res.json({ success: true, message: 'Empleado no encontrado' });
+        await sendWhatsAppMessage(number, `❌ No encontré ningún empleado con el código *${empCode}*.`);
+        return res.json({ success: true });
       }
 
       const targetId = targetUserRows[0].user_id;
