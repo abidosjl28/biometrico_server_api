@@ -322,119 +322,202 @@ app.post('/api/whatsapp/incoming', async (req, res) => {
       return res.json({ success: true, message: 'Ignorado (sin texto o número reconocible)' });
     }
 
-    // --- Lógica de detección de fecha ---
-    // Buscamos formato DD/MM/YYYY en el texto
+    // --- Lógica de detección de fecha y comandos ---
+    const textUpper = incomingText.toUpperCase().trim();
     let queryDate = todayDateStr;
     let labelDate = 'hoy';
-    const dateRegex = /(\d{1,2})\/(\d{1,2})\/(\d{4})/;
-    const dateMatch = incomingText.match(dateRegex);
-    
-    if (dateMatch) {
-      const day = dateMatch[1].padStart(2, '0');
-      const month = dateMatch[2].padStart(2, '0');
-      const year = dateMatch[3];
-      queryDate = `${year}-${month}-${day}`;
-      labelDate = `${day}/${month}/${year}`;
+    let queryMonth = todayDateStr.substring(5, 7);
+    let queryYear = todayDateStr.substring(0, 4);
+
+    // 1. Detectar palabras clave como "ayer"
+    if (textUpper.includes('AYER')) {
+      const yesterdayMs = limaTimeMs - (24 * 60 * 60 * 1000);
+      queryDate = new Date(yesterdayMs).toISOString().split('T')[0];
+      labelDate = 'ayer';
+    } 
+    // 2. Detectar formato de fecha DD/MM/YYYY o DD-MM-YYYY o DD.MM.YYYY
+    else {
+      const dateRegex = /(\d{1,2})[\/\-\.](\d{1,2})[\/\-\.](\d{4})/;
+      const dateMatch = incomingText.match(dateRegex);
+      if (dateMatch) {
+        const day = dateMatch[1].padStart(2, '0');
+        const month = dateMatch[2].padStart(2, '0');
+        const year = dateMatch[3];
+        queryDate = `${year}-${month}-${day}`;
+        labelDate = `${day}/${month}/${year}`;
+      }
     }
 
-    // Lógica para el Administrador
-    if (number === '51948902026') {
-      // Extraer el código (primera palabra que sea numérica)
-      const parts = incomingText.split(' ');
-      const empCode = parts[0].trim();
-      
-      logger.info(`Admin solicitando reporte para empleado: [${empCode}] en fecha [${queryDate}]`);
-      
-      if (!empCode || isNaN(empCode)) {
-        await sendWhatsAppMessage(number, '⚠️ Por favor envía el código del empleado, opcionalmente seguido de la fecha (ej: "108" o "108 28/02/2026").');
-        return res.json({ success: true });
-      }
+    // 3. Detectar mes específico para reportes (F, I, T seguido de espacio y número)
+    const monthRegex = /[FIT]\s+(\d{1,2})/;
+    const monthMatch = textUpper.match(monthRegex);
+    if (monthMatch) {
+      queryMonth = monthMatch[1].padStart(2, '0');
+    }
 
-      // Buscar al empleado por su ID
-      logger.info(`Buscando usuario ${empCode} en DB...`);
-      const targetUserRows = await runQuery('SELECT user_id, name FROM users WHERE user_id = ?', [empCode]);
-      logger.info(`Resultado búsqueda usuario: ${JSON.stringify(targetUserRows)}`);
-      
-      if (!targetUserRows.length) {
-        await sendWhatsAppMessage(number, `❌ No encontré ningún empleado con el código *${empCode}*.`);
-        return res.json({ success: true });
-      }
-
-      const targetId = targetUserRows[0].user_id;
-      const targetName = targetUserRows[0].name || targetId;
-
-      // Obtener marcaciones del empleado
-      const targetDateRows = await runQuery(`
+    // --- Definición de funciones de reporte ---
+    const getDailyReport = async (targetId, targetName, date, label) => {
+      const rows = await runQuery(`
         SELECT timestamp, punch FROM attendance
         WHERE user_id = ? AND substr(timestamp, 1, 10) = ?
         ORDER BY timestamp ASC
-      `, [targetId, queryDate]);
+      `, [targetId, date]);
 
-      if (!targetDateRows.length) {
-        await sendWhatsAppMessage(number, `👤 *${targetName}* no tiene marcaciones registradas para el *${labelDate}*.`);
-        return res.json({ success: true, message: 'Sin marcaciones enviadas al admin' });
-      }
+      if (!rows.length) return `👤 *${targetName}* no tiene marcaciones el *${label}*.`;
 
-      let adminSummary = `👤 Marcaciones de *${targetName}* (${labelDate}):\n`;
-      targetDateRows.forEach(r => {
+      let summary = `👤 Marcaciones de *${targetName}* (${label}):\n`;
+      rows.forEach(r => {
         const type = r.punch === 0 ? 'Entrada' : (r.punch === 1 ? 'Salida' : 'Marcación');
-        // El timestamp ya viene en hora de Lima desde la BD (ej. '2026-02-28 08:23:49')
-        // Al armar el string, lo forzamos a interpretarse y mostrarse tal cual, sin shift de zona
-        const safeTimeStr = r.timestamp.replace(' ', 'T');
-        const d = new Date(safeTimeStr);
-        let timeStr = r.timestamp.split(' ')[1] || r.timestamp; // Fallback al texto crudo
-        if(!isNaN(d.getTime())) {
-             timeStr = d.toLocaleTimeString('es-PE', { hour12: true, hour: '2-digit', minute: '2-digit' });
-        }
-        adminSummary += `- ${type}: ${timeStr}\n`;
+        const timePart = r.timestamp.split(' ')[1] || '';
+        summary += `- ${type}: ${timePart.substring(0, 5)}\n`;
+      });
+      return summary.trim();
+    };
+
+    const getMonthlyReport = async (targetId, targetName, type, month, year) => {
+      const monthStr = `${year}-${month}`;
+      const rows = await runQuery(`
+        SELECT timestamp, punch FROM attendance
+        WHERE user_id = ? AND substr(timestamp, 1, 7) = ?
+        ORDER BY timestamp ASC
+      `, [targetId, monthStr]);
+
+      // Agrupar por día
+      const byDay = {};
+      rows.forEach(r => {
+        const day = r.timestamp.substring(8, 10);
+        if (!byDay[day]) byDay[day] = [];
+        byDay[day].push(r);
       });
 
-      await sendWhatsAppMessage(number, adminSummary.trim());
-      return res.json({ success: true, message: 'Resumen admin enviado' });
-    }
+      const monthName = new Date(year, parseInt(month)-1).toLocaleString('es-ES', { month: 'long' });
+      
+      if (type === 'F') { // Faltas
+        let msg = `🚩 *Faltas de ${targetName}* (${monthName}):\n`;
+        let count = 0;
+        // Solo verificamos hasta hoy si es el mes actual
+        const lastDay = (month === todayDateStr.substring(5, 7)) ? parseInt(todayDateStr.substring(8, 10)) : 31;
+        for (let i = 1; i <= lastDay; i++) {
+          const d = i.toString().padStart(2, '0');
+          if (!byDay[d]) {
+            msg += `- Día ${d}\n`;
+            count++;
+          }
+        }
+        return count > 0 ? msg.trim() : `✅ ${targetName} no tiene faltas en ${monthName}.`;
+      }
 
-    // Lógica para Empleados normales
-    // Buscar usuario por teléfono
-    const userRows = await runQuery('SELECT user_id, name FROM users WHERE phone = ?', [number]);
-    if (!userRows.length) {
-      logger.warn(`WhatsApp inbound: número no registrado ${number}`);
-      return res.json({ success: false, error: 'Número no registrado' });
-    }
-    const userId = userRows[0].user_id;
-    const userName = userRows[0].name || userId;
+      if (type === 'I') { // Incompletos
+        let msg = `⚠️ *Marcaciones Incompletas* (${targetName} - ${monthName}):\n`;
+        let count = 0;
+        Object.keys(byDay).sort().forEach(d => {
+          if (byDay[d].length < 4) {
+            msg += `- Día ${d}: ${byDay[d].length} marc.\n`;
+            count++;
+          }
+        });
+        return count > 0 ? msg.trim() : `✅ Todas las marcaciones están completas en ${monthName}.`;
+      }
 
-    if (incomingText.startsWith('4')) {
-      // Obtener marcaciones para este usuario
-      const dateRows = await runQuery(`
-        SELECT timestamp, punch FROM attendance
-        WHERE user_id = ? AND substr(timestamp, 1, 10) = ?
-        ORDER BY timestamp ASC
-      `, [userId, queryDate]);
+      if (type === 'T') { // Tardanzas y Horas (8:30 AM / 8 Horas)
+        let totalMinutesLate = 0;
+        let totalMinutesWorked = 0;
+        let daysWithLate = 0;
 
-      if (!dateRows.length) {
-        const msg = `👋 Hola ${userName}, no tienes marcaciones registradas para el *${labelDate}*.`;
+        Object.keys(byDay).forEach(d => {
+          const dayRows = byDay[d];
+          // Tardanza: primera marcación del día (entrada)
+          const first = dayRows[0];
+          const time = first.timestamp.split(' ')[1]; // "HH:MM:SS"
+          const mins = parseInt(time.split(':')[0]) * 60 + parseInt(time.split(':')[1]);
+          const limit = 8 * 60 + 30; // 08:30
+          if (mins > limit) {
+            totalMinutesLate += (mins - limit);
+            daysWithLate++;
+          }
+
+          // Horas trabajadas: Simplificado (última - primera)
+          if (dayRows.length >= 2) {
+            const last = dayRows[dayRows.length - 1];
+            const startMs = new Date(first.timestamp.replace(' ', 'T')).getTime();
+            const endMs = new Date(last.timestamp.replace(' ', 'T')).getTime();
+            totalMinutesWorked += Math.round((endMs - startMs) / 60000);
+          }
+        });
+
+        const hoursWorked = (totalMinutesWorked / 60).toFixed(1);
+        return `🕒 *Reporte de Tardanzas* (${targetName} - ${monthName}):\n- Días con tardanza: ${daysWithLate}\n- Total minutos tarde: ${totalMinutesLate} min.\n- Total horas laboradas: ${hoursWorked} h.\n_(Base: 08:30 AM / 8h diarias)_`;
+      }
+    };
+
+    // --- Lógica Principal de Comandos ---
+    const isAdmin = number === '51948902026';
+    const parts = textUpper.split(/\s+/);
+    let targetId, targetName;
+
+    if (isAdmin && parts[0].match(/^\d+$/)) {
+      // Admin consultando por ID de empleado
+      const empId = parts[0];
+      const users = await runQuery('SELECT user_id, name FROM users WHERE user_id = ?', [empId]);
+      if (!users.length) {
+        await sendWhatsAppMessage(number, `❌ No encontré al empleado *${empId}*.`);
+        return res.json({ success: true });
+      }
+      targetId = users[0].user_id;
+      targetName = users[0].name;
+      
+      // Determinar qué reporte quiere el admin para ese empleado
+      if (parts[1] === 'F') {
+        const msg = await getMonthlyReport(targetId, targetName, 'F', queryMonth, queryYear);
         await sendWhatsAppMessage(number, msg);
-        return res.json({ success: true, message: 'Sin marcaciones enviadas' });
+      } else if (parts[1] === 'I') {
+        const msg = await getMonthlyReport(targetId, targetName, 'I', queryMonth, queryYear);
+        await sendWhatsAppMessage(number, msg);
+      } else if (parts[1] === 'T') {
+        const msg = await getMonthlyReport(targetId, targetName, 'T', queryMonth, queryYear);
+        await sendWhatsAppMessage(number, msg);
+      } else {
+        // Por defecto, reporte diario
+        const msg = await getDailyReport(targetId, targetName, queryDate, labelDate);
+        await sendWhatsAppMessage(number, msg);
       }
-
-      let summary = `👋 Hola ${userName}, tus marcaciones (${labelDate}):\n`;
-      dateRows.forEach(r => {
-        const type = r.punch === 0 ? 'Entrada' : (r.punch === 1 ? 'Salida' : 'Marcación');
-        const safeTimeStr = r.timestamp.replace(' ', 'T');
-        const d = new Date(safeTimeStr);
-        let timeStr = r.timestamp.split(' ')[1] || r.timestamp;
-        if(!isNaN(d.getTime())) {
-             timeStr = d.toLocaleTimeString('es-PE', { hour12: true, hour: '2-digit', minute: '2-digit' });
-        }
-        summary += `- ${type}: ${timeStr}\n`;
-      });
-      await sendWhatsAppMessage(number, summary.trim());
-      return res.json({ success: true, message: 'Resumen enviado' });
-    } else {
-      const msg = `👋 Hola ${userName}, para ver tus marcaciones de hoy escribe "4".`;
-      await sendWhatsAppMessage(number, msg);
-      return res.json({ success: true, message: 'Instrucción enviada' });
+      return res.json({ success: true });
     }
+
+    // Para Empleado (identificado por su número) o Admin preguntando por sí mismo
+    const me = await runQuery('SELECT user_id, name FROM users WHERE phone = ?', [number]);
+    if (!me.length) {
+      if (!isAdmin) {
+        logger.warn(`Número no registrado enviando mensaje: ${number}`);
+        return res.json({ success: false, error: 'Número no registrado' });
+      } else {
+        // Admin sin registrar número de empleado (caso raro)
+        targetId = 'ADMIN'; targetName = 'ADMIN';
+      }
+    } else {
+      targetId = me[0].user_id;
+      targetName = me[0].name;
+    }
+
+    if (textUpper.startsWith('F')) {
+      const msg = await getMonthlyReport(targetId, targetName, 'F', queryMonth, queryYear);
+      await sendWhatsAppMessage(number, msg);
+    } else if (textUpper.startsWith('I')) {
+      const msg = await getMonthlyReport(targetId, targetName, 'I', queryMonth, queryYear);
+      await sendWhatsAppMessage(number, msg);
+    } else if (textUpper.startsWith('T')) {
+      const msg = await getMonthlyReport(targetId, targetName, 'T', queryMonth, queryYear);
+      await sendWhatsAppMessage(number, msg);
+    } else if (textUpper.startsWith('4') || textUpper.includes('AYER') || incomingText.match(/\d/)) {
+      const msg = await getDailyReport(targetId, targetName, queryDate, labelDate);
+      await sendWhatsAppMessage(number, msg);
+    } else {
+      // Catálogo / Ayuda
+      const menu = `👋 Hola *${targetName}*.\nAquí tienes el catálogo de consultas:\n\n*1. Marcaciones Diarias*\n- Envía *4* o *ayer* o una fecha (ej: *28/02*).\n\n*2. Reportes Mensuales*\n- *F [MES]*: Faltas (ej: *F 02*).\n- *I [MES]*: Incompletos (ej: *I 02*).\n- *T [MES]*: Tardanzas y Horas (ej: *T 02*).\n\n_(Nota: Los meses son 01, 02, etc)_`;
+      await sendWhatsAppMessage(number, menu);
+    }
+
+    return res.json({ success: true });
   } catch (error) {
     logger.error('Error webhook WhatsApp inbound', error);
     res.status(500).json({ success: false, error: error.message });
