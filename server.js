@@ -48,27 +48,27 @@ let db;
 let dbReady = false;
 
 if (DB_TYPE === 'sqlite') {
-  const dbPath = process.env.DB_FILE || path.join(__dirname, 'biometrico_nube.db');
+  // Usar una subcarpeta 'database' es más seguro para montajes de volumen
+  const defaultPath = path.join(__dirname, 'database', 'biometrico.db');
+  const dbPath = process.env.DB_FILE || defaultPath;
   
   logger.info(`Intentando abrir base de datos en: ${dbPath}`);
   
-  // Diagnóstico de ruta
+  // Diagnóstico y preparación de ruta
   try {
+    const parentDir = path.dirname(dbPath);
+    if (!fs.existsSync(parentDir)) {
+      logger.info(`Creando directorio para base de datos: ${parentDir}`);
+      fs.mkdirSync(parentDir, { recursive: true });
+    }
+
     if (fs.existsSync(dbPath)) {
       const stats = fs.lstatSync(dbPath);
       if (stats.isDirectory()) {
-         logger.error(`❌ ERROR CRÍTICO: ${dbPath} es un DIRECTORIO. SQLite necesita un ARCHIVO. Revisa tu volumen en Docker.`);
+         logger.error(`❌ ERROR CRÍTICO: ${dbPath} es un DIRECTORIO. SQLite necesita un ARCHIVO.`);
+         logger.info(`Sugerencia: Cambia el nombre en DB_FILE a algo nuevo (ej: ${dbPath}_file) o borra la carpeta en el servidor.`);
       } else {
-         const mode = stats.mode.toString(8);
-         logger.info(`Archivo DB encontrado. Permisos: ${mode}, Tamaño: ${stats.size} bytes`);
-      }
-    } else {
-      logger.info(`Archivo DB no existe, se creará uno nuevo: ${dbPath}`);
-      // Intentar crear el directorio padre si no existe
-      const parentDir = path.dirname(dbPath);
-      if (!fs.existsSync(parentDir)) {
-        logger.info(`Creando directorio padre: ${parentDir}`);
-        fs.mkdirSync(parentDir, { recursive: true });
+         logger.info(`Archivo DB encontrado. Tamaño: ${stats.size} bytes`);
       }
     }
   } catch (e) {
