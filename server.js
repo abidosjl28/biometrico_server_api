@@ -322,13 +322,31 @@ app.post('/api/whatsapp/incoming', async (req, res) => {
       return res.json({ success: true, message: 'Ignorado (sin texto o número reconocible)' });
     }
 
+    // --- Lógica de detección de fecha ---
+    // Buscamos formato DD/MM/YYYY en el texto
+    let queryDate = todayDateStr;
+    let labelDate = 'hoy';
+    const dateRegex = /(\d{1,2})\/(\d{1,2})\/(\d{4})/;
+    const dateMatch = incomingText.match(dateRegex);
+    
+    if (dateMatch) {
+      const day = dateMatch[1].padStart(2, '0');
+      const month = dateMatch[2].padStart(2, '0');
+      const year = dateMatch[3];
+      queryDate = `${year}-${month}-${day}`;
+      labelDate = `${day}/${month}/${year}`;
+    }
+
     // Lógica para el Administrador
     if (number === '51948902026') {
-      // Verificar si envió un código de empleado (asumimos numérico)
-      const empCode = incomingText.trim();
-      logger.info(`Admin solicitando reporte para empleado: [${empCode}]`);
+      // Extraer el código (primera palabra que sea numérica)
+      const parts = incomingText.split(' ');
+      const empCode = parts[0].trim();
+      
+      logger.info(`Admin solicitando reporte para empleado: [${empCode}] en fecha [${queryDate}]`);
+      
       if (!empCode || isNaN(empCode)) {
-        await sendWhatsAppMessage(number, '⚠️ Por favor envía solo el número de código del empleado (ej: 108).');
+        await sendWhatsAppMessage(number, '⚠️ Por favor envía el código del empleado, opcionalmente seguido de la fecha (ej: "108" o "108 28/02/2026").');
         return res.json({ success: true });
       }
 
@@ -336,6 +354,7 @@ app.post('/api/whatsapp/incoming', async (req, res) => {
       logger.info(`Buscando usuario ${empCode} en DB...`);
       const targetUserRows = await runQuery('SELECT user_id, name FROM users WHERE user_id = ?', [empCode]);
       logger.info(`Resultado búsqueda usuario: ${JSON.stringify(targetUserRows)}`);
+      
       if (!targetUserRows.length) {
         await sendWhatsAppMessage(number, `❌ No encontré ningún empleado con el código *${empCode}*.`);
         return res.json({ success: true });
@@ -345,19 +364,19 @@ app.post('/api/whatsapp/incoming', async (req, res) => {
       const targetName = targetUserRows[0].name || targetId;
 
       // Obtener marcaciones del empleado
-      const targetTodayRows = await runQuery(`
+      const targetDateRows = await runQuery(`
         SELECT timestamp, punch FROM attendance
         WHERE user_id = ? AND substr(timestamp, 1, 10) = ?
         ORDER BY timestamp ASC
-      `, [targetId, todayDateStr]);
+      `, [targetId, queryDate]);
 
-      if (!targetTodayRows.length) {
-        await sendWhatsAppMessage(number, `👤 ${targetName} no tiene marcaciones registradas hoy.`);
+      if (!targetDateRows.length) {
+        await sendWhatsAppMessage(number, `👤 *${targetName}* no tiene marcaciones registradas para el *${labelDate}*.`);
         return res.json({ success: true, message: 'Sin marcaciones enviadas al admin' });
       }
 
-      let adminSummary = `👤 Marcaciones de *${targetName}* hoy:\n`;
-      targetTodayRows.forEach(r => {
+      let adminSummary = `👤 Marcaciones de *${targetName}* (${labelDate}):\n`;
+      targetDateRows.forEach(r => {
         const type = r.punch === 0 ? 'Entrada' : (r.punch === 1 ? 'Salida' : 'Marcación');
         // El timestamp ya viene en hora de Lima desde la BD (ej. '2026-02-28 08:23:49')
         // Al armar el string, lo forzamos a interpretarse y mostrarse tal cual, sin shift de zona
@@ -384,20 +403,22 @@ app.post('/api/whatsapp/incoming', async (req, res) => {
     const userId = userRows[0].user_id;
     const userName = userRows[0].name || userId;
 
-    if (incomingText === '4') {
-      // Obtener marcaciones del día para este usuario
-      const todayRows = await runQuery(`
+    if (incomingText.startsWith('4')) {
+      // Obtener marcaciones para este usuario
+      const dateRows = await runQuery(`
         SELECT timestamp, punch FROM attendance
         WHERE user_id = ? AND substr(timestamp, 1, 10) = ?
         ORDER BY timestamp ASC
-      `, [userId, todayDateStr]);
-      if (!todayRows.length) {
-        const msg = `👋 Hola ${userName}, no tienes marcaciones registradas hoy.`;
+      `, [userId, queryDate]);
+
+      if (!dateRows.length) {
+        const msg = `👋 Hola ${userName}, no tienes marcaciones registradas para el *${labelDate}*.`;
         await sendWhatsAppMessage(number, msg);
         return res.json({ success: true, message: 'Sin marcaciones enviadas' });
       }
-      let summary = `👋 Hola ${userName}, tus marcaciones de hoy:\n`;
-      todayRows.forEach(r => {
+
+      let summary = `👋 Hola ${userName}, tus marcaciones (${labelDate}):\n`;
+      dateRows.forEach(r => {
         const type = r.punch === 0 ? 'Entrada' : (r.punch === 1 ? 'Salida' : 'Marcación');
         const safeTimeStr = r.timestamp.replace(' ', 'T');
         const d = new Date(safeTimeStr);
