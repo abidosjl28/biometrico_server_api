@@ -485,11 +485,30 @@ app.post('/api/whatsapp/incoming', async (req, res) => {
         if (error) throw error;
         if (!products || products.length === 0) return `🔍 No encontré ningún producto que coincida con "${searchText}".`;
 
+        // 3. Para cada producto, buscar su stock en el periodo más reciente
+        const productsWithStock = await Promise.all(products.map(async (p) => {
+          const { data: stockData } = await supabase
+            .from('minvalm5')
+            .select('nstock_hnd, cperiodo')
+            .eq('cartcodigo', p.cartcodigo)
+            .order('cperiodo', { ascending: false })
+            .limit(1);
+          
+          if (stockData && stockData.length > 0) {
+            p.stock = stockData[0].nstock_hnd;
+            p.periodo = stockData[0].cperiodo;
+          } else {
+            p.stock = 0;
+            p.periodo = 'N/A';
+          }
+          return p;
+        }));
+
         let msg = `📦 *Resultados de Búsqueda*:\n_(Sincronizado: ${syncLabel})_\n\n`;
-        products.forEach(p => {
+        productsWithStock.forEach(p => {
           msg += `🔹 *${p.cartdescri}*\n`;
           msg += `   - Código: ${p.cartcodigo}\n`;
-          msg += `   - Unidad: ${p.cunicodigo}\n`;
+          msg += `   - **Stock: ${Number(p.stock).toFixed(2)} ${p.cunicodigo} (Periodo: ${p.periodo})**\n`;
           msg += `   - Precio Mayor: S/ ${p.npvp1?.toFixed(2)}\n`;
           msg += `   - Precio Público: S/ ${p.npvp2?.toFixed(2)}\n\n`;
         });
