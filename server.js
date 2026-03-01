@@ -562,17 +562,25 @@ app.post('/api/whatsapp/incoming', async (req, res) => {
 
     // Para Empleado (identificado por su número) o Admin preguntando por sí mismo
     const me = await runQuery('SELECT user_id, name FROM users WHERE phone = ?', [number]);
-    if (!me.length) {
-      if (!isAdmin) {
-        logger.warn(`Número no registrado enviando mensaje: ${number}`);
-        return res.json({ success: false, error: 'Número no registrado' });
-      } else {
-        // Admin sin registrar número de empleado (caso raro)
-        targetId = 'ADMIN'; targetName = 'ADMIN';
-      }
-    } else {
+    
+    // Mapeo de nombres personalizados para números autorizados (vendedoras)
+    const specialNames = {
+      '51949689010': 'Sra Isabel',
+      '51998396175': 'Sra Mary'
+    };
+
+    if (me.length > 0) {
       targetId = me[0].user_id;
       targetName = me[0].name;
+    } else if (specialNames[number] || specialNames['51' + number]) {
+      targetId = 'VENDEDORA';
+      targetName = specialNames[number] || specialNames['51' + number];
+    } else if (isAdmin) {
+      targetId = 'ADMIN';
+      targetName = 'ADMIN';
+    } else {
+      logger.warn(`Número no registrado enviando mensaje: ${number}`);
+      return res.json({ success: false, error: 'Número no registrado' });
     }
 
     if (textUpper.startsWith('F')) {
