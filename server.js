@@ -48,14 +48,30 @@ let db;
 
 if (DB_TYPE === 'sqlite') {
   const dbPath = process.env.DB_FILE || path.join(__dirname, 'biometrico_nube.db');
+  
+  // Verificar si el path existe y si es un directorio (error común en Docker volumes)
+  try {
+    if (fs.existsSync(dbPath) && fs.lstatSync(dbPath).isDirectory()) {
+      logger.error(`❌ ERROR CRÍTICO: El path de la base de datos es un DIRECTORIO: ${dbPath}. SQLite requiere un ARCHIVO.`);
+    }
+  } catch (e) {
+    // Ignorar errores de verificación
+  }
+
   db = new sqlite3.Database(dbPath, (err) => {
     if (err) {
-      console.error('❌ Error abriendo base de datos SQLite:', err.message);
+      logger.error(`❌ Error abriendo base de datos SQLite (${dbPath}): ${err.message}`);
     } else {
-      console.log(`✅ Conectado a SQLite: ${dbPath}`);
+      logger.info(`✅ Conectado a SQLite: ${dbPath}`);
+      // Timeout para esperar si la BD está ocupada (evita SQLITE_BUSY)
+      db.configure('busyTimeout', 10000); 
+      
       // Habilitar modo WAL para mejor rendimiento en escrituras concurrentes
-      db.run('PRAGMA journal_mode = WAL');
+      db.run('PRAGMA journal_mode = WAL', (err) => {
+        if (err) logger.warn('⚠️ No se pudo activar WAL:', err.message);
+      });
       db.run('PRAGMA synchronous = NORMAL');
+      
       initializeDatabase();
     }
   });
