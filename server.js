@@ -45,40 +45,63 @@ const DB_TYPE = process.env.DB_TYPE || 'sqlite'; // Forzar sqlite por defecto si
 
 // Inicialización de base de datos
 let db;
+let dbReady = false;
 
 if (DB_TYPE === 'sqlite') {
   const dbPath = process.env.DB_FILE || path.join(__dirname, 'biometrico_nube.db');
   
-  // Verificar si el path existe y si es un directorio (error común en Docker volumes)
+  logger.info(`Intentando abrir base de datos en: ${dbPath}`);
+  
+  // Diagnóstico de ruta
   try {
-    if (fs.existsSync(dbPath) && fs.lstatSync(dbPath).isDirectory()) {
-      logger.error(`❌ ERROR CRÍTICO: El path de la base de datos es un DIRECTORIO: ${dbPath}. SQLite requiere un ARCHIVO.`);
+    if (fs.existsSync(dbPath)) {
+      const stats = fs.lstatSync(dbPath);
+      if (stats.isDirectory()) {
+         logger.error(`❌ ERROR CRÍTICO: ${dbPath} es un DIRECTORIO. SQLite necesita un ARCHIVO. Revisa tu volumen en Docker.`);
+      } else {
+         const mode = stats.mode.toString(8);
+         logger.info(`Archivo DB encontrado. Permisos: ${mode}, Tamaño: ${stats.size} bytes`);
+      }
+    } else {
+      logger.info(`Archivo DB no existe, se creará uno nuevo: ${dbPath}`);
+      // Intentar crear el directorio padre si no existe
+      const parentDir = path.dirname(dbPath);
+      if (!fs.existsSync(parentDir)) {
+        logger.info(`Creando directorio padre: ${parentDir}`);
+        fs.mkdirSync(parentDir, { recursive: true });
+      }
     }
   } catch (e) {
-    // Ignorar errores de verificación
+    logger.warn(`Error en diagnóstico de ruta: ${e.message}`);
   }
 
-  db = new sqlite3.Database(dbPath, (err) => {
+  db = new sqlite3.Database(dbPath, sqlite3.OPEN_READWRITE | sqlite3.OPEN_CREATE, (err) => {
     if (err) {
-      logger.error(`❌ Error abriendo base de datos SQLite (${dbPath}): ${err.message}`);
+      logger.error(`❌ FALLO FATAL AL ABRIR SQLITE (${dbPath}): ${err.message}`);
+      // En producción, es mejor que el contenedor muera para que se reinicie
+      if (process.env.NODE_ENV === 'production') {
+        setTimeout(() => process.exit(1), 5000);
+      }
     } else {
-      logger.info(`✅ Conectado a SQLite: ${dbPath}`);
-      // Timeout para esperar si la BD está ocupada (evita SQLITE_BUSY)
-      db.configure('busyTimeout', 10000); 
+      logger.info(`✅ Conectado a SQLite exitosamente: ${dbPath}`);
       
-      // Habilitar modo WAL para mejor rendimiento en escrituras concurrentes
-      db.run('PRAGMA journal_mode = WAL', (err) => {
-        if (err) logger.warn('⚠️ No se pudo activar WAL:', err.message);
+      // Configurar timeout largo para evitar SQLITE_BUSY en discos lentos
+      db.configure('busyTimeout', 30000); 
+      
+      // Deshabilitar WAL por ahora para diagnosticar si es el culpable del bloqueo
+      // db.run('PRAGMA journal_mode = WAL');
+      db.run('PRAGMA journal_mode = DELETE'); 
+      db.run('PRAGMA synchronous = FULL');
+      
+      initializeDatabase().then(() => {
+        dbReady = true;
+        logger.info('🚀 Base de datos inicializada y lista');
+      }).catch(initErr => {
+        logger.error('❌ Error inicializando tablas:', initErr);
       });
-      db.run('PRAGMA synchronous = NORMAL');
-      
-      initializeDatabase();
     }
   });
-} else {
-  // Configuración PostgreSQL (opcional)
-  // ... código postgres ...
-}
+} 
 
 // Middleware
 app.use(helmet());
@@ -246,16 +269,17 @@ function runRun(query, params = []) {
 
 // API Endpoints
 
-// Health check
-app.get('/api/health', (req, res) => {
-  res.json({
-    success: true,
-    message: 'API funcionando correctamente',
-    timestamp: new Date().toISOString(),
-    version: '1.0.2',
-    database: process.env.DB_TYPE || 'sqlite'
-  });
-});
+    // Health check
+    app.get('/api/health', (req, res) => {
+      res.json({
+        success: true,
+        message: 'API funcionando correctamente',
+        timestamp: new Date().toISOString(),
+        version: '1.0.2',
+        database: process.env.DB_TYPE || 'sqlite',
+        dbReady: dbReady
+      });
+    });
 
 // Webhook para recibir mensajes entrantes de Evolution (WhatsApp)
 app.post('/api/whatsapp/incoming', async (req, res) => {
@@ -263,7 +287,12 @@ app.post('/api/whatsapp/incoming', async (req, res) => {
     // Si viene de Evolution, viene envuelto en req.body.data
     const eventData = req.body.data || req.body;
 
-    logger.info(`Webhook INCOMING: ${JSON.stringify(eventData)}`);
+    logger.info(`Webhook INCOMING (ready=${dbReady}): ${JSON.stringify(eventData)}`);
+
+    if (!dbReady) {
+      logger.warn('Recibido webhook pero la base de datos no está lista aún.');
+      return res.status(503).json({ success: false, error: 'Database initializing' });
+    }
 
     // Evitar que el bot se responda a sí mismo
     if (eventData.key && eventData.key.fromMe) {
